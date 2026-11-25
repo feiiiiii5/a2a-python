@@ -280,6 +280,54 @@ class TestGetAgentCard:
         assert 'Failed to parse JSON' in str(exc_info.value)
 
     @pytest.mark.asyncio
+    async def test_get_agent_card_unicode_decode_error(self) -> None:
+        """A non-UTF-8 body is reported as an AgentCardResolutionError."""
+        transport = httpx_lib.MockTransport(
+            lambda _request: httpx_lib.Response(
+                200, content=b'{"name": "\xff"}'
+            )
+        )
+        async with httpx_lib.AsyncClient(transport=transport) as client:
+            resolver = A2ACardResolver(client, 'https://example.com')
+            with pytest.raises(AgentCardResolutionError) as exc_info:
+                await resolver.get_agent_card()
+
+        assert 'Failed to parse JSON' in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, UnicodeDecodeError)
+
+    @pytest.mark.asyncio
+    async def test_get_agent_card_deeply_nested_json(self) -> None:
+        """A pathologically nested body is reported as an AgentCardResolutionError."""
+        body = b'[' * 100_000 + b']' * 100_000
+        transport = httpx_lib.MockTransport(
+            lambda _request: httpx_lib.Response(200, content=body)
+        )
+        async with httpx_lib.AsyncClient(transport=transport) as client:
+            resolver = A2ACardResolver(client, 'https://example.com')
+            with pytest.raises(AgentCardResolutionError) as exc_info:
+                await resolver.get_agent_card()
+
+        assert 'Failed to parse JSON' in str(exc_info.value)
+        assert isinstance(exc_info.value.__cause__, RecursionError)
+
+    @pytest.mark.asyncio
+    async def test_get_agent_card_verifier_value_error_propagates(
+        self, valid_agent_card_data
+    ) -> None:
+        """A ValueError from the caller's verifier is not swallowed."""
+
+        def reject_card(_card: AgentCard) -> None:
+            raise ValueError('signature mismatch')
+
+        transport = httpx_lib.MockTransport(
+            lambda _request: httpx_lib.Response(200, json=valid_agent_card_data)
+        )
+        async with httpx_lib.AsyncClient(transport=transport) as client:
+            resolver = A2ACardResolver(client, 'https://example.com')
+            with pytest.raises(ValueError, match='signature mismatch'):
+                await resolver.get_agent_card(signature_verifier=reject_card)
+
+    @pytest.mark.asyncio
     async def test_get_agent_card_request_error(
         self, resolver, mock_httpx_client
     ):
